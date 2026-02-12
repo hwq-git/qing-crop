@@ -1,0 +1,63 @@
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* 画布区域 */
+canvas {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 拖拽区域动画 */
+.border-dashed {
+  transition: all 0.2s ease;
+}
+
+/* 工具按钮激活状态 */
+button[data-state="active"] {
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+/* 选中区域高亮 */
+.shape-selected {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* 响应式调整 */
+@media (max-width: 1024px) {
+  .grid-cols-1 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 加载动画 */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.loading-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
