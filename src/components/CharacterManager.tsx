@@ -11,14 +11,32 @@ import {
   FolderOpen,
   Search,
   Tag,
+  FileCode,
+  Brain,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 import { toast } from 'sonner';
 import type { CharacterItem } from '@/utils/ocrEngine';
 import { CharacterClassifier } from '@/utils/characterClassifier';
+import {
+  exportYOLO,
+  exportCOCO,
+  exportICDAR,
+  exportTXT,
+  downloadFile,
+  downloadImages,
+} from '@/utils/exportFormats';
 
 interface CharacterManagerProps {
   characters: CharacterItem[];
@@ -193,19 +211,50 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
       return;
     }
 
-    // 按归类分组导出
-    groupedChars.forEach(group => {
-      group.items.forEach((item, index) => {
-        if (item.imageData) {
-          const link = document.createElement('a');
-          link.download = `char_${group.char}_${index + 1}.png`;
-          link.href = item.imageData;
-          link.click();
-        }
-      });
-    });
-
+    downloadImages(characters);
     toast.success(`已导出 ${characters.length} 个字符图片`);
+  };
+
+  // 导出训练集
+  const handleExportTrainingSet = (format: 'yolo' | 'coco' | 'icdar' | 'txt') => {
+    if (characters.length === 0) {
+      toast.error('没有可导出的字符');
+      return;
+    }
+
+    if (!imageSource) {
+      toast.error('请先上传图片');
+      return;
+    }
+
+    const imageName = 'image.png';
+    const imageWidth = imageSource.width;
+    const imageHeight = imageSource.height;
+
+    switch (format) {
+      case 'yolo':
+        const yoloContent = exportYOLO(characters, imageWidth, imageHeight);
+        downloadFile(yoloContent, 'labels.txt');
+        toast.success('已导出 YOLO 格式');
+        break;
+      case 'coco':
+        const cocoData = exportCOCO(characters, imageName, imageWidth, imageHeight);
+        downloadFile(JSON.stringify(cocoData, null, 2), 'annotations.json');
+        toast.success('已导出 COCO 格式');
+        break;
+      case 'icdar':
+        const icdarContent = exportICDAR(characters);
+        downloadFile(icdarContent, 'gt.txt');
+        toast.success('已导出 ICDAR 格式');
+        break;
+      case 'txt':
+        const txtFiles = exportTXT(characters);
+        txtFiles.forEach(file => {
+          downloadFile(file.content, file.name);
+        });
+        toast.success('已导出 TXT 格式');
+        break;
+    }
   };
 
   // 渲染网格视图
@@ -497,12 +546,44 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
           </Button>
           <Button size="sm" variant="outline" onClick={handleExport} className="gap-1">
             <Tag className="w-4 h-4" />
-            导出JSON
+            JSON
           </Button>
-          <Button size="sm" variant="default" onClick={handleExportImages} className="gap-1">
+          <Button size="sm" variant="outline" onClick={handleExportImages} className="gap-1">
             <Download className="w-4 h-4" />
-            导出图片
+            图片
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="default" className="gap-1">
+                <Brain className="w-4 h-4" />
+                训练集
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuLabel>导出训练集格式</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => handleExportTrainingSet('yolo')}>
+                <FileCode className="w-4 h-4 mr-2" />
+                YOLO 格式
+                <span className="ml-auto text-xs text-gray-400">检测</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExportTrainingSet('coco')}>
+                <FileCode className="w-4 h-4 mr-2" />
+                COCO 格式
+                <span className="ml-auto text-xs text-gray-400">检测</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExportTrainingSet('txt')}>
+                <FileCode className="w-4 h-4 mr-2" />
+                图片+TXT
+                <span className="ml-auto text-xs text-gray-400">识别</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExportTrainingSet('icdar')}>
+                <FileCode className="w-4 h-4 mr-2" />
+                ICDAR 格式
+                <span className="ml-auto text-xs text-gray-400">端到端</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 

@@ -11,6 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { getOCREngine } from '@/utils/ocrEngine';
+import { getHistoryManager } from '@/utils/historyManager';
 import type { CharacterItem } from '@/utils/ocrEngine';
 
 type ToolType = 'select' | 'rect' | 'circle';
@@ -29,6 +30,8 @@ interface Shape {
 interface CanvasEditorProps {
   imageUrl: string | null;
   imageSource: HTMLImageElement | null;
+  originalImageSource: HTMLImageElement | null;
+  rotation: number;
   onClear: () => void;
   onCharactersAdd: (characters: CharacterItem[]) => void;
 }
@@ -36,6 +39,8 @@ interface CanvasEditorProps {
 export const CanvasEditor: React.FC<CanvasEditorProps> = ({
   imageUrl,
   imageSource,
+  originalImageSource,
+  rotation,
   onClear,
   onCharactersAdd,
 }) => {
@@ -336,7 +341,9 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
       return;
     }
 
-    if (!image) {
+    // 使用原始图片（未旋转的）来提取字符
+    const sourceImage = originalImageSource || image;
+    if (!sourceImage) {
       toast.error('图片未加载');
       return;
     }
@@ -346,7 +353,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
 
     shapes.forEach((shape) => {
       const char = engine.createCharacterFromCut(
-        image,
+        sourceImage,
         {
           x: shape.x,
           y: shape.y,
@@ -357,6 +364,10 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
       );
       characters.push(char);
     });
+
+    // 记录历史
+    const history = getHistoryManager();
+    history.execute('batch_add', `添加 ${characters.length} 个字符`, [], characters, rotation);
 
     onCharactersAdd(characters);
     toast.success(`已添加 ${characters.length} 个字符到字符库`);

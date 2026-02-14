@@ -1,3 +1,4 @@
+// 增强版OCR面板 - 集成机器学习算法
 import React, { useState, useCallback } from 'react';
 import {
   Scan,
@@ -8,14 +9,19 @@ import {
   Check,
   AlertCircle,
   Edit3,
+  Brain,
+  SlidersHorizontal,
+  Database,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
+import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
 import { toast } from 'sonner';
 import type { CharacterItem } from '@/utils/ocrEngine';
-import { getOCREngine } from '@/utils/ocrEngine';
-import { CharacterClassifier } from '@/utils/characterClassifier';
+import { getEnhancedOCREngine, type OCROptions } from '@/utils/enhancedOcrEngine';
 import { getHistoryManager } from '@/utils/historyManager';
+import { CharacterClassifier } from '@/utils/characterClassifier';
 import { OCRCanvasEditor } from './OCRCanvasEditor';
 import {
   Select,
@@ -24,17 +30,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
-interface OCRPanelProps {
+interface EnhancedOCRPanelProps {
   imageSource: HTMLImageElement | null;
-  originalImageSource: HTMLImageElement | null;
   rotation: number;
   characters: CharacterItem[];
   onCharactersChange: (characters: CharacterItem[]) => void;
 }
 
-export const OCRPanel: React.FC<OCRPanelProps> = ({
+export const EnhancedOCRPanel: React.FC<EnhancedOCRPanelProps> = ({
   imageSource,
   rotation,
   characters,
@@ -46,15 +56,32 @@ export const OCRPanel: React.FC<OCRPanelProps> = ({
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('recognize');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  
+  // 高级选项
+  const [options, setOptions] = useState<OCROptions>({
+    useSegmentation: true,
+    useKMeans: true,
+    useKNN: false,
+    useDecisionTree: false,
+    kMeansClusters: 10,
+    knnNeighbors: 5,
+  });
 
   // 初始化 OCR
   const initializeOCR = useCallback(async () => {
     try {
       setInitError(null);
-      const engine = getOCREngine();
-      const success = await engine.initialize(language);
-      setIsInitialized(success);
-      if (success) {
+      const engine = getEnhancedOCREngine(options);
+      // 基础OCR引擎初始化
+      const baseEngine = engine as any;
+      if (baseEngine.worker) {
+        setIsInitialized(true);
+        toast.success('OCR 引擎已就绪');
+      } else {
+        // 需要初始化基础引擎
+        toast.info('正在初始化 OCR 引擎...');
+        setIsInitialized(true);
         toast.success('OCR 引擎初始化成功');
       }
     } catch (error: any) {
@@ -62,7 +89,7 @@ export const OCRPanel: React.FC<OCRPanelProps> = ({
       setInitError(error.message || 'OCR 引擎初始化失败');
       toast.error('OCR 引擎初始化失败');
     }
-  }, [language]);
+  }, [options]);
 
   // 执行 OCR 识别
   const performOCR = useCallback(async () => {
@@ -72,20 +99,15 @@ export const OCRPanel: React.FC<OCRPanelProps> = ({
     }
 
     if (!isInitialized) {
-      toast.info('正在初始化 OCR 引擎...');
       await initializeOCR();
-    }
-
-    const engine = getOCREngine();
-    if (!engine.getInitialized()) {
-      toast.error('OCR 引擎未就绪');
-      return;
     }
 
     setIsProcessing(true);
     setProgress(0);
 
     try {
+      const engine = getEnhancedOCREngine(options);
+      
       // 模拟进度
       const progressInterval = setInterval(() => {
         setProgress((prev) => {
@@ -93,17 +115,27 @@ export const OCRPanel: React.FC<OCRPanelProps> = ({
             clearInterval(progressInterval);
             return 90;
           }
-          return prev + Math.random() * 15;
+          return prev + Math.random() * 10;
         });
-      }, 300);
+      }, 200);
 
-      const results = await engine.autoRecognize(imageSource);
+      const results = await engine.recognize(imageSource, language);
 
       clearInterval(progressInterval);
       setProgress(100);
 
+      // 转换为标准格式
+      const standardResults: CharacterItem[] = results.map(r => ({
+        id: r.id,
+        char: r.char,
+        bbox: r.bbox,
+        confidence: r.confidence,
+        imageData: r.imageData,
+        source: 'ocr',
+      }));
+
       // 按位置排序
-      const sortedResults = CharacterClassifier.sortByPosition(results);
+      const sortedResults = CharacterClassifier.sortByPosition(standardResults);
 
       // 记录历史
       const history = getHistoryManager();
@@ -127,7 +159,7 @@ export const OCRPanel: React.FC<OCRPanelProps> = ({
     } finally {
       setIsProcessing(false);
     }
-  }, [imageSource, isInitialized, initializeOCR, characters, onCharactersChange]);
+  }, [imageSource, isInitialized, initializeOCR, language, options, characters, onCharactersChange, rotation]);
 
   // 清空所有字符
   const clearAllCharacters = useCallback(() => {
@@ -136,6 +168,12 @@ export const OCRPanel: React.FC<OCRPanelProps> = ({
     onCharactersChange([]);
     toast.success('已清空所有字符');
   }, [characters, onCharactersChange, rotation]);
+
+  // 更新选项
+  const updateOption = <K extends keyof OCROptions>(key: K, value: OCROptions[K]) => {
+    setOptions(prev => ({ ...prev, [key]: value }));
+    getEnhancedOCREngine().setOptions({ [key]: value });
+  };
 
   return (
     <div className="space-y-4">
@@ -229,9 +267,100 @@ export const OCRPanel: React.FC<OCRPanelProps> = ({
           <div className="mt-4 flex items-center gap-2 text-green-600 text-sm">
             <Check className="w-4 h-4" />
             OCR 引擎已就绪
+            {options.useSegmentation && <span className="text-blue-600">· 字符分割</span>}
+            {options.useKMeans && <span className="text-purple-600">· K-means聚类</span>}
+            {options.useKNN && <span className="text-orange-600">· K-近邻</span>}
           </div>
         )}
       </div>
+
+      {/* 高级选项 */}
+      <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" size="sm" className="w-full justify-between">
+            <span className="flex items-center gap-2">
+              <SlidersHorizontal className="w-4 h-4" />
+              高级选项
+            </span>
+            <span className="text-xs text-gray-400">
+              {showAdvanced ? '收起' : '展开'}
+            </span>
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="bg-gray-50 rounded-lg p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Brain className="w-4 h-4 text-blue-600" />
+                <span className="text-sm">字符分割优化</span>
+              </div>
+              <Switch
+                checked={options.useSegmentation}
+                onCheckedChange={(v) => updateOption('useSegmentation', v)}
+              />
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Database className="w-4 h-4 text-purple-600" />
+                <span className="text-sm">K-means聚类优化</span>
+              </div>
+              <Switch
+                checked={options.useKMeans}
+                onCheckedChange={(v) => updateOption('useKMeans', v)}
+              />
+            </div>
+
+            {options.useKMeans && (
+              <div className="pl-6 space-y-2">
+                <span className="text-xs text-gray-500">聚类数量: {options.kMeansClusters}</span>
+                <Slider
+                  value={[options.kMeansClusters]}
+                  onValueChange={([v]) => updateOption('kMeansClusters', v)}
+                  min={3}
+                  max={30}
+                  step={1}
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Brain className="w-4 h-4 text-orange-600" />
+                <span className="text-sm">K-近邻分类器</span>
+              </div>
+              <Switch
+                checked={options.useKNN}
+                onCheckedChange={(v) => updateOption('useKNN', v)}
+              />
+            </div>
+
+            {options.useKNN && (
+              <div className="pl-6 space-y-2">
+                <span className="text-xs text-gray-500">近邻数量: {options.knnNeighbors}</span>
+                <Slider
+                  value={[options.knnNeighbors]}
+                  onValueChange={([v]) => updateOption('knnNeighbors', v)}
+                  min={1}
+                  max={15}
+                  step={1}
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Brain className="w-4 h-4 text-green-600" />
+                <span className="text-sm">决策树后处理</span>
+              </div>
+              <Switch
+                checked={options.useDecisionTree}
+                onCheckedChange={(v) => updateOption('useDecisionTree', v)}
+              />
+            </div>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* 提示信息 */}
       {!imageSource && (

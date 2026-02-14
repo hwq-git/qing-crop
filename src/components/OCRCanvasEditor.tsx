@@ -8,11 +8,18 @@ import {
   X,
   Move,
   Maximize2,
+  Copy,
+  ClipboardPaste,
+  ArrowUp,
+  Sparkles,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import type { CharacterItem } from '@/utils/ocrEngine';
+import { getHistoryManager } from '@/utils/historyManager';
+import { getClipboardManager } from '@/utils/clipboardManager';
+import { ClipboardPanel } from './ClipboardPanel';
 
 interface OCRCanvasEditorProps {
   imageSource: HTMLImageElement | null;
@@ -36,15 +43,98 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
   const [isResizing, setIsResizing] = useState(false);
   const [resizeHandle, setResizeHandle] = useState<ResizeHandle>(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const [hoveredHandle, setHoveredHandle] = useState<ResizeHandle>(null);
+  const [copiedChar, setCopiedChar] = useState<CharacterItem | null>(null);
 
   // 同步 ref 和 state
   useEffect(() => {
     charactersRef.current = characters;
   }, [characters]);
+
+  // 键盘事件监听
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedId) return;
+      
+      // 忽略输入框中的按键
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+
+      const char = characters.find((c) => c.id === selectedId);
+      if (!char) return;
+
+      const step = e.shiftKey ? 10 : 1;
+      let newX = char.bbox.x;
+      let newY = char.bbox.y;
+      let moved = false;
+
+      switch (e.key) {
+        case 'ArrowUp':
+          newY -= step;
+          moved = true;
+          break;
+        case 'ArrowDown':
+          newY += step;
+          moved = true;
+          break;
+        case 'ArrowLeft':
+          newX -= step;
+          moved = true;
+          break;
+        case 'ArrowRight':
+          newX += step;
+          moved = true;
+          break;
+        case 'Delete':
+        case 'Backspace':
+          deleteSelectedChar();
+          return;
+        case 'c':
+        case 'C':
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            copySelectedChar();
+          }
+          return;
+        case 'v':
+        case 'V':
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            pasteChar();
+          }
+          return;
+      }
+
+      if (moved) {
+        e.preventDefault();
+        const updatedChars = characters.map((c) =>
+          c.id === selectedId
+            ? { ...c, bbox: { ...c.bbox, x: newX, y: newY } }
+            : c
+        );
+        onCharactersChange(updatedChars);
+        
+        // 延迟提取图片
+        setTimeout(() => {
+          const updatedChar = charactersRef.current.find((c) => c.id === selectedId);
+          if (updatedChar) {
+            const newImageData = extractCharImage(updatedChar);
+            if (newImageData) {
+              const newChars = charactersRef.current.map((c) =>
+                c.id === selectedId ? { ...c, imageData: newImageData } : c
+              );
+              onCharactersChange(newChars);
+            }
+          }
+        }, 100);
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [selectedId, characters]);
 
   // 初始化画布
   useEffect(() => {
@@ -70,24 +160,18 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx || !imageSource) return;
 
-    // 清空画布
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // 绘制图片
     ctx.drawImage(imageSource, 0, 0);
 
-    // 绘制所有字符框
     characters.forEach((char) => {
       const isSelected = char.id === selectedId;
       const isEditing = char.id === editingId;
 
-      // 绘制边框
       ctx.strokeStyle = isSelected ? '#3b82f6' : isEditing ? '#10b981' : '#ef4444';
       ctx.lineWidth = 2 / scale;
       ctx.setLineDash([]);
       ctx.strokeRect(char.bbox.x, char.bbox.y, char.bbox.width, char.bbox.height);
 
-      // 填充背景
       ctx.fillStyle = isSelected
         ? 'rgba(59, 130, 246, 0.15)'
         : isEditing
@@ -95,16 +179,10 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
         : 'rgba(239, 68, 68, 0.1)';
       ctx.fillRect(char.bbox.x, char.bbox.y, char.bbox.width, char.bbox.height);
 
-      // 绘制字符标签
       ctx.fillStyle = isSelected ? '#3b82f6' : isEditing ? '#10b981' : '#ef4444';
       ctx.font = `bold ${Math.max(14 / scale, 12)}px sans-serif`;
-      ctx.fillText(
-        char.char,
-        char.bbox.x,
-        char.bbox.y - 6 / scale
-      );
+      ctx.fillText(char.char, char.bbox.x, char.bbox.y - 6 / scale);
 
-      // 绘制调整大小的手柄（只在选中时显示）
       if (isSelected || isEditing) {
         const handleSize = 8 / scale;
         const halfHandle = handleSize / 2;
@@ -112,7 +190,6 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 1 / scale;
 
-        // 四个角的手柄
         const corners = [
           { x: char.bbox.x, y: char.bbox.y, handle: 'nw' },
           { x: char.bbox.x + char.bbox.width, y: char.bbox.y, handle: 'ne' },
@@ -127,7 +204,6 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
           ctx.strokeRect(x - halfHandle, y - halfHandle, handleSize, handleSize);
         });
 
-        // 四条边的中点手柄
         const edges = [
           { x: char.bbox.x + char.bbox.width / 2, y: char.bbox.y, handle: 'n' },
           { x: char.bbox.x + char.bbox.width / 2, y: char.bbox.y + char.bbox.height, handle: 's' },
@@ -151,7 +227,6 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     drawCanvas();
   }, [drawCanvas]);
 
-  // 获取鼠标在画布上的坐标
   const getCanvasCoordinates = (e: React.MouseEvent): { x: number; y: number } => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -162,7 +237,6 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     };
   };
 
-  // 检查点是否在字符框内
   const isPointInChar = (x: number, y: number, char: CharacterItem): boolean => {
     return (
       x >= char.bbox.x &&
@@ -172,18 +246,15 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     );
   };
 
-  // 获取调整大小的手柄
   const getResizeHandle = (x: number, y: number, char: CharacterItem): ResizeHandle => {
     const handleSize = 12 / scale;
     const halfHandle = handleSize / 2;
 
-    // 检查四个角
     if (Math.abs(x - char.bbox.x) < halfHandle && Math.abs(y - char.bbox.y) < halfHandle) return 'nw';
     if (Math.abs(x - (char.bbox.x + char.bbox.width)) < halfHandle && Math.abs(y - char.bbox.y) < halfHandle) return 'ne';
     if (Math.abs(x - char.bbox.x) < halfHandle && Math.abs(y - (char.bbox.y + char.bbox.height)) < halfHandle) return 'sw';
     if (Math.abs(x - (char.bbox.x + char.bbox.width)) < halfHandle && Math.abs(y - (char.bbox.y + char.bbox.height)) < halfHandle) return 'se';
 
-    // 检查四条边
     if (Math.abs(y - char.bbox.y) < halfHandle && x > char.bbox.x && x < char.bbox.x + char.bbox.width) return 'n';
     if (Math.abs(y - (char.bbox.y + char.bbox.height)) < halfHandle && x > char.bbox.x && x < char.bbox.x + char.bbox.width) return 's';
     if (Math.abs(x - char.bbox.x) < halfHandle && y > char.bbox.y && y < char.bbox.y + char.bbox.height) return 'w';
@@ -192,11 +263,9 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     return null;
   };
 
-  // 鼠标按下
   const handleMouseDown = (e: React.MouseEvent) => {
     const { x, y } = getCanvasCoordinates(e);
 
-    // 如果已选中字符，先检查是否点击了调整大小的手柄
     if (selectedId) {
       const selectedChar = characters.find((c) => c.id === selectedId);
       if (selectedChar) {
@@ -209,7 +278,6 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
       }
     }
 
-    // 查找点击的字符
     for (let i = characters.length - 1; i >= 0; i--) {
       if (isPointInChar(x, y, characters[i])) {
         setSelectedId(characters[i].id);
@@ -223,11 +291,9 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     setHoveredHandle(null);
   };
 
-  // 鼠标移动
   const handleMouseMove = (e: React.MouseEvent) => {
     const { x, y } = getCanvasCoordinates(e);
 
-    // 调整大小
     if (isResizing && selectedId && resizeHandle) {
       const char = characters.find((c) => c.id === selectedId);
       if (!char) return;
@@ -285,7 +351,6 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
       return;
     }
 
-    // 移动
     if (isDragging && selectedId) {
       const char = characters.find((c) => c.id === selectedId);
       if (!char) return;
@@ -302,7 +367,6 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
       return;
     }
 
-    // 悬停检测 - 显示调整大小的光标
     if (selectedId) {
       const selectedChar = characters.find((c) => c.id === selectedId);
       if (selectedChar) {
@@ -312,7 +376,6 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     }
   };
 
-  // 提取字符框位置的图片
   const extractCharImage = (char: CharacterItem): string => {
     if (!imageSource) return '';
     
@@ -339,11 +402,8 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     return '';
   };
 
-  // 鼠标松开
   const handleMouseUp = () => {
-    // 如果刚完成拖拽或调整大小，重新提取图片
     if ((isDragging || isResizing) && selectedId && imageSource) {
-      // 从 ref 中获取最新的字符数据
       const updatedChar = charactersRef.current.find((c) => c.id === selectedId);
       if (updatedChar) {
         const newImageData = extractCharImage(updatedChar);
@@ -362,7 +422,6 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     setResizeHandle(null);
   };
 
-  // 获取光标样式
   const getCursorStyle = (): string => {
     if (isDragging) return 'grabbing';
     if (isResizing) {
@@ -401,23 +460,27 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     return 'default';
   };
 
-  // 删除选中字符
   const deleteSelectedChar = () => {
     if (selectedId) {
-      onCharactersChange(characters.filter((c) => c.id !== selectedId));
+      const history = getHistoryManager();
+      const prevChars = [...characters];
+      const nextChars = characters.filter((c) => c.id !== selectedId);
+      
+      history.execute('delete_char', '删除字符', prevChars, nextChars, 0);
+      onCharactersChange(nextChars);
       setSelectedId(null);
       toast.success('已删除');
     }
   };
 
-  // 清空所有字符
   const clearAllChars = () => {
+    const history = getHistoryManager();
+    history.execute('clear_all', '清空所有字符', characters, [], 0);
     onCharactersChange([]);
     setSelectedId(null);
     toast.success('已清空所有字符');
   };
 
-  // 开始编辑字符
   const startEdit = () => {
     if (selectedId) {
       const char = characters.find((c) => c.id === selectedId);
@@ -428,25 +491,83 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
     }
   };
 
-  // 保存编辑
   const saveEdit = () => {
     if (editingId) {
-      onCharactersChange(
-        characters.map((c) => (c.id === editingId ? { ...c, char: editValue } : c))
-      );
+      const history = getHistoryManager();
+      const prevChars = [...characters];
+      const nextChars = characters.map((c) => (c.id === editingId ? { ...c, char: editValue } : c));
+      
+      history.execute('edit_text', '修改字符', prevChars, nextChars, 0);
+      onCharactersChange(nextChars);
       setEditingId(null);
       setSelectedId(null);
       toast.success('已保存');
     }
   };
 
-  // 取消编辑
   const cancelEdit = () => {
     setEditingId(null);
     setEditValue('');
   };
 
-  // 添加新字符框
+  // 复制选中字符
+  const copySelectedChar = () => {
+    if (selectedId) {
+      const char = characters.find((c) => c.id === selectedId);
+      if (char) {
+        setCopiedChar({ ...char });
+        toast.success('已复制');
+      }
+    }
+  };
+
+  // 粘贴字符
+  const pasteChar = () => {
+    if (!copiedChar || !imageSource) {
+      toast.error('没有可复制的内容');
+      return;
+    }
+
+    const newChar: CharacterItem = {
+      ...copiedChar,
+      id: `manual_${Date.now()}`,
+      bbox: {
+        x: copiedChar.bbox.x + 20,
+        y: copiedChar.bbox.y + 20,
+        width: copiedChar.bbox.width,
+        height: copiedChar.bbox.height,
+      },
+    };
+
+    // 提取图片
+    const imageData = extractCharImage(newChar);
+    newChar.imageData = imageData;
+
+    const history = getHistoryManager();
+    const prevChars = [...characters];
+    const nextChars = [...characters, newChar];
+    
+    history.execute('add_char', '粘贴字符', prevChars, nextChars, 0);
+    onCharactersChange(nextChars);
+    setSelectedId(newChar.id);
+    toast.success('已粘贴');
+  };
+
+  // 从剪贴板粘贴文本
+  const pasteFromClipboard = async () => {
+    const clipboard = getClipboardManager();
+    const text = await clipboard.readText();
+    
+    if (text && selectedId) {
+      const char = characters.find((c) => c.id === selectedId);
+      if (char) {
+        setEditingId(selectedId);
+        setEditValue(text.charAt(0) || char.char);
+        toast.success('从剪贴板读取');
+      }
+    }
+  };
+
   const addNewChar = () => {
     if (!imageSource) return;
 
@@ -459,17 +580,15 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
       source: 'manual',
     };
 
-    // 提取图片
-    const canvas = document.createElement('canvas');
-    canvas.width = 40;
-    canvas.height = 40;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.drawImage(imageSource, 50, 50, 40, 40, 0, 0, 40, 40);
-      newChar.imageData = canvas.toDataURL('image/png');
-    }
+    const imageData = extractCharImage(newChar);
+    newChar.imageData = imageData;
 
-    onCharactersChange([...characters, newChar]);
+    const history = getHistoryManager();
+    const prevChars = [...characters];
+    const nextChars = [...characters, newChar];
+    
+    history.execute('add_char', '添加字符框', prevChars, nextChars, 0);
+    onCharactersChange(nextChars);
     setSelectedId(newChar.id);
     toast.success('已添加新字符框');
   };
@@ -489,7 +608,7 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
         <div className="flex items-center gap-1">
           <Button size="sm" onClick={addNewChar} className="gap-1">
             <Plus className="w-4 h-4" />
-            添加字符框
+            添加
           </Button>
           <Button
             size="sm"
@@ -499,7 +618,7 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
             className="gap-1"
           >
             <Trash2 className="w-4 h-4" />
-            删除选中
+            删除
           </Button>
           <Button
             size="sm"
@@ -510,6 +629,33 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
           >
             <RotateCcw className="w-4 h-4" />
             清空
+          </Button>
+        </div>
+
+        <div className="w-px h-8 bg-gray-300 mx-2" />
+
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={copySelectedChar}
+            disabled={!selectedId}
+            className="gap-1"
+            title="复制 (Ctrl+C)"
+          >
+            <Copy className="w-4 h-4" />
+            复制
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={pasteChar}
+            disabled={!copiedChar}
+            className="gap-1"
+            title="粘贴 (Ctrl+V)"
+          >
+            <ClipboardPaste className="w-4 h-4" />
+            粘贴
           </Button>
         </div>
 
@@ -532,16 +678,28 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
             </Button>
           </div>
         ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={startEdit}
-            disabled={!selectedId}
-            className="gap-1"
-          >
-            <Scan className="w-4 h-4" />
-            修改字符
-          </Button>
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={startEdit}
+              disabled={!selectedId}
+              className="gap-1"
+            >
+              <Scan className="w-4 h-4" />
+              修改
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={pasteFromClipboard}
+              disabled={!selectedId}
+              className="gap-1"
+            >
+              <ClipboardPaste className="w-4 h-4" />
+              剪贴板
+            </Button>
+          </>
         )}
 
         <div className="flex-1" />
@@ -553,17 +711,30 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
           </span>
           <span className="flex items-center gap-1">
             <Maximize2 className="w-4 h-4" />
-            拖拽边角调整大小
+            拖拽边角调整
+          </span>
+          <span className="flex items-center gap-1">
+            <ArrowUp className="w-4 h-4" />
+            方向键微调
           </span>
         </div>
 
         <div className="w-px h-8 bg-gray-300 mx-2" />
 
         <div className="text-sm text-gray-500">
-          共 {characters.length} 个字符
-          {selectedId && ' (已选中1个)'}
+          共 {characters.length} 个
+          {selectedId && ' (已选)'}
         </div>
       </div>
+
+      {/* 剪贴板接力面板 */}
+      {characters.length > 0 && (
+        <ClipboardPanel
+          characters={characters}
+          selectedId={selectedId}
+          onCharactersChange={onCharactersChange}
+        />
+      )}
 
       {/* 画布区域 */}
       <div
@@ -598,7 +769,15 @@ export const OCRCanvasEditor: React.FC<OCRCanvasEditorProps> = ({
             编辑中
           </span>
         </div>
-        <span>点击选中，拖拽移动，拖拽边角调整大小</span>
+        <div className="flex items-center gap-4">
+          <span>↑↓←→ 微调</span>
+          <span>Ctrl+C/V 复制粘贴</span>
+          <span>Delete 删除</span>
+          <span className="text-blue-600 flex items-center gap-1">
+            <Sparkles className="w-3 h-3" />
+            Ctrl+V 粘贴外部OCR结果
+          </span>
+        </div>
       </div>
     </div>
   );
